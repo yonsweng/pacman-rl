@@ -1,34 +1,13 @@
-import argparse
 import gym
 import numpy as np
 from itertools import count
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
-
 import skimage.transform
 import matplotlib.pyplot as plt
-
-
-parser = argparse.ArgumentParser(description='PyTorch REINFORCE example')
-parser.add_argument('--gamma', type=float, default=0.99, metavar='G',
-                    help='discount factor (default: 0.99)')
-parser.add_argument('--seed', type=int, default=543, metavar='N',
-                    help='random seed (default: 543)')
-parser.add_argument('--render', action='store_true',
-                    help='render the environment')
-parser.add_argument('--log-interval', type=int, default=10, metavar='N',
-                    help='interval between training status logs (default: 10)')
-args = parser.parse_args()
-
-
-env = gym.make('MsPacman-v0')
-device = torch.device('cuda:1')
-env.seed(args.seed)
-torch.manual_seed(args.seed)
 
 
 class Policy(nn.Module):
@@ -55,18 +34,11 @@ class Policy(nn.Module):
         return F.softmax(action_scores, dim=1)
 
 
-lr = 0.000125
-print('learning rate:', lr)
-policy = Policy().to(device)
-optimizer = optim.Adam(policy.parameters(), lr=lr)
-eps = np.finfo(np.float32).eps.item()
-
-
 def resize(image, size):
     return skimage.transform.resize(image, (size, size))
 
 
-def select_action(state):
+def select_action(state, policy, device):
     state = state.transpose(2, 0, 1)
     state = torch.tensor(state, device=device).float().unsqueeze(0)
     probs = policy(state)
@@ -76,7 +48,7 @@ def select_action(state):
     return action.item()
 
 
-def finish_episode():
+def finish_episode(optimizer, policy, gamma, device, eps):
     R = 0
     policy_loss = []
     returns = []
@@ -85,7 +57,7 @@ def finish_episode():
         # if r > 0:
         #     R = 0
         future_steps += 1
-        R = r + args.gamma * R
+        R = r + gamma * R
         returns.insert(0, R / future_steps)
     returns = torch.tensor(returns, device=device)
     returns = (returns - returns.mean()) / (returns.std() + eps)
@@ -99,7 +71,17 @@ def finish_episode():
     del policy.saved_log_probs[:]
 
 
-def main():
+def train(device, args):
+    env = gym.make('MsPacman-v0')
+
+    env.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    eps = np.finfo(np.float32).eps.item()
+
+    policy = Policy().to(device)
+    optimizer = optim.Adam(policy.parameters(), lr=args.lr)
+
     avg_rewards = []
     avg_reward = 0
     max_reward = 0
@@ -111,10 +93,8 @@ def main():
             # prev_state = state
             state = resize(state, 64)
 
-            action = select_action(state)
+            action = select_action(state, policy, device)
             state, reward, done, _ = env.step(action)
-            if args.render:
-                env.render()
             policy.rewards.append(reward)
             ep_reward += reward
             if done:
@@ -122,7 +102,7 @@ def main():
 
         avg_reward += ep_reward
 
-        finish_episode()
+        finish_episode(optimizer, policy, args.gamma, device, eps)
         if i_episode % args.log_interval == 0:
             avg_reward = avg_reward / args.log_interval
             print('Episode {}\tLast reward: {:.2f}\tAverage reward: {:.2f}'.format(
@@ -134,7 +114,7 @@ def main():
             # save the best model
             if avg_reward > max_reward:
                 max_reward = avg_reward
-                torch.save(policy.state_dict(), 'policy.pt')
+                torch.save(policy.state_dict(), f'models/reinforce{device.index}.pt')
 
             # plot a graph
             plt.clf()
@@ -142,8 +122,4 @@ def main():
             plt.plot(x, avg_rewards)
             plt.xlabel('Episode')
             plt.ylabel('Average Reward')
-            plt.savefig("graph.png")
-
-
-if __name__ == '__main__':
-    main()
+            plt.savefig(f'graphs/reinforce{device.index}.png')
