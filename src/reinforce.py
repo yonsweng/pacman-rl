@@ -26,7 +26,7 @@ args = parser.parse_args()
 
 
 env = gym.make('MsPacman-v0')
-gpu = torch.device('cuda:1')
+device = torch.device('cuda:1')
 env.seed(args.seed)
 torch.manual_seed(args.seed)
 
@@ -57,7 +57,7 @@ class Policy(nn.Module):
 
 lr = 0.000125
 print('learning rate:', lr)
-policy = Policy().to(gpu)
+policy = Policy().to(device)
 optimizer = optim.Adam(policy.parameters(), lr=lr)
 eps = np.finfo(np.float32).eps.item()
 
@@ -68,7 +68,7 @@ def resize(image, size):
 
 def select_action(state):
     state = state.transpose(2, 0, 1)
-    state = torch.tensor(state, device=gpu).float().unsqueeze(0)
+    state = torch.tensor(state, device=device).float().unsqueeze(0)
     probs = policy(state)
     m = Categorical(probs)
     action = m.sample()
@@ -87,7 +87,7 @@ def finish_episode():
         future_steps += 1
         R = r + args.gamma * R
         returns.insert(0, R / future_steps)
-    returns = torch.tensor(returns, device=gpu)
+    returns = torch.tensor(returns, device=device)
     returns = (returns - returns.mean()) / (returns.std() + eps)
     for log_prob, R in zip(policy.saved_log_probs, returns):
         policy_loss.append(-log_prob * R)
