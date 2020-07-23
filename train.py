@@ -83,7 +83,7 @@ if __name__ == '__main__':
     N_ACTIONS = env.action_space.n
     START_EPS = 1.0
     FINAL_EPS = 0.05
-    EXPLORATION_STEPS = 100000
+    EXPLORATION_STEPS = 200000
     MEMORY_SIZE = 50000  # Steps
     MAINDQN_UPDATE_CYCLE = 4
     TARGETDQN_UPDATE_CYCLE = 20000  # Steps
