@@ -38,6 +38,7 @@ if __name__ == '__main__':
     mainDQN = DQN(HISTORY_SIZE, N_ACTIONS)
     mainDQN.load_state_dict(torch.load(f'models/{args.model}.pt',
                             map_location='cpu'))
+    mainDQN.eval()
 
     while True:
         history = np.zeros([HISTORY_SIZE+1, RESIZED_SIZE, RESIZED_SIZE],
