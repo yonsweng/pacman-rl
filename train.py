@@ -133,11 +133,20 @@ if __name__ == '__main__':
             state, reward, done, _ = env.step(action)
             episode_reward += reward
 
+            # Reward propagation
+            if reward != 0:
+                running_reward = reward
+                idx = replay_memory.__len__() - 1
+                while idx >= 0 and replay_memory[idx][2] == 0:
+                    running_reward *= DISCOUNT
+                    replay_memory[idx][2] = running_reward
+                    idx -= 1
+
             # Save history in replay_memory
             state = preprocess(state)
             history[1] = state
-            replay_memory.append((history.copy(),
-                                 action, reward, done))
+            replay_memory.append([history.copy(),
+                                 action, reward, done])
             history[0] = history[1]
 
             # Decrease the exploration rate
