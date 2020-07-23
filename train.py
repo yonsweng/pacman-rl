@@ -96,7 +96,7 @@ if __name__ == '__main__':
     mainDQN = DQN(HISTORY_SIZE, N_ACTIONS).to(device)
     targetDQN = copy.deepcopy(mainDQN)  # On device
 
-    optimizer = torch.optim.RMSprop(mainDQN.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(mainDQN.parameters(), lr=args.lr)
 
     # Training-wide variables
     eps = START_EPS
