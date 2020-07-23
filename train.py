@@ -1,4 +1,5 @@
 import gym
+import cv2
 import copy
 import torch
 import torch.nn as nn
@@ -8,14 +9,13 @@ import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
-from skimage.transform import resize
 from src.dqn import DQN
 
 
 def preprocess(X):
     # Resize
-    return np.uint8(resize(X / 255, (RESIZED_SIZE, RESIZED_SIZE),
-                    mode='reflect') * 255)
+    return np.uint8(cv2.resize(X, (RESIZED_SIZE, RESIZED_SIZE),
+                    interpolation=cv2.INTER_LINEAR))
 
 
 def select_action(Q):
@@ -83,7 +83,7 @@ if __name__ == '__main__':
     N_ACTIONS = env.action_space.n
     START_EPS = 1.0
     FINAL_EPS = 0.05
-    EXPLORATION_STEPS = 200000
+    EXPLORATION_STEPS = 300000
     MEMORY_SIZE = 50000  # Steps
     MAINDQN_UPDATE_CYCLE = 4
     TARGETDQN_UPDATE_CYCLE = 20000  # Steps
@@ -97,7 +97,7 @@ if __name__ == '__main__':
     mainDQN = DQN(3, N_ACTIONS).to(device)
     targetDQN = copy.deepcopy(mainDQN)  # On device
 
-    optimizer = torch.optim.Adam(mainDQN.parameters(), lr=args.lr)
+    optimizer = torch.optim.RMSprop(mainDQN.parameters(), lr=args.lr)
 
     # Training-wide variables
     eps = START_EPS
