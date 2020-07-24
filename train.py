@@ -1,61 +1,109 @@
 import gym
-import cv2
 import copy
-import torch
-import torch.nn as nn
 import random
-import argparse
-import datetime
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from collections import deque
-from src.dqn import DQN
+import cv2
+import datetime
+
+now = datetime.datetime.now()
+HHMMSS = str(now.hour*10000 + now.minute*100 + now.second).zfill(6)
+
+gpu = torch.device('cuda:0')
+
+env = gym.make('MsPacman-v0')
+
+# hyperparameters
+MINIBATCH_SIZE = 32
+HISTORY_SIZE = 4
+TRAIN_START = 50000
+FINAL_EXPLORATION = 0.05
+TARGET_UPDATE = 10000
+MEMORY_SIZE = 200000
+EXPLORATION = 500000
+FRAMES_PER_EPOCH = 10000
+START_EXPLORATION = 1.
+INPUT = env.observation_space.shape  # (210, 160, 3)
+OUTPUT = env.action_space.n  # 9
+HEIGHT = 84
+WIDTH = 84
+LEARNING_RATE = 0.000001
+DISCOUNT = 0.99
+EPSILON = 0.01
+MOMENTUM = 0.95
 
 
-def preprocess(X):
-    # Resize
-    return np.uint8(cv2.resize(X, (RESIZED_SIZE, RESIZED_SIZE),
-                    interpolation=cv2.INTER_LINEAR))
+def pre_proc(X):
+    x = np.mean(X, axis=2)  # rgb->gray
+    x = np.uint8(cv2.resize(x, (HEIGHT, WIDTH),
+                            interpolation=cv2.INTER_LINEAR))
+    return x
 
 
-def select_action(Q):
-    if eps > np.random.rand(1):
-        return np.random.randint(N_ACTIONS)
+def get_init_state(history, s):
+    for i in range(HISTORY_SIZE):
+        history[:, :, i] = pre_proc(s)
+
+
+def get_game_type(count, info, no_life_game, start_live):
+    if count == 1:
+        start_live = info['ale.lives']
+        # 시작 라이프가 0일 경우, 라이프 없는 게임
+        if start_live == 0:
+            no_life_game = True
+        else:
+            no_life_game = False
+
+    return [no_life_game, start_live]
+
+
+def get_terminal(start_live, info, reward, no_life_game, ter):
+    if no_life_game:
+        # 목숨이 없는 게임일 경우 Terminal 처리
+        if reward < 0:
+            ter = True
     else:
-        return np.argmax(Q)
+        # 목숨 있는 게임일 경우 Terminal 처리
+        if start_live > info['ale.lives']:
+            ter = True
+            start_live = info['ale.lives']
+
+    return [ter, start_live]
 
 
-def train(batch):
+def train_minibatch(mainDQN, targetDQN, minibatch, optimizer):
     s_stack = []
     a_stack = []
     r_stack = []
     s1_stack = []
     d_stack = []
 
-    for s_r, a_r, r_r, d_r in batch:
-        s_stack.append(s_r[0])
+    for s_r, a_r, r_r, d_r in minibatch:
+        s_stack.append(s_r[:, :, :4])
         a_stack.append(a_r)
         r_stack.append(r_r)
-        s1_stack.append(s_r[1])
+        s1_stack.append(s_r[:, :, 1:])
         d_stack.append(d_r)
 
-    r_stack = np.array(r_stack, dtype='float32')
-    d_stack = np.array(d_stack, dtype='float32')
-    s_stack = np.array(s_stack, dtype='float32') / 255
-    s_stack = s_stack.transpose(0, 3, 1, 2)
-    s_stack = torch.tensor(s_stack, device=device)
-    s1_stack = np.array(s1_stack, dtype='float32') / 255
-    s1_stack = s1_stack.transpose(0, 3, 1, 2)
-    s1_stack = torch.tensor(s1_stack, device=device)
+    r_stack = np.array(r_stack)
+    d_stack = np.array(d_stack) + 0  # terminal이면 1, 아니면 0
+    # (minibatch, 84, 84, 4) -> (minibatch, 4, 84, 84)
+    s_stack = np.array(s_stack).transpose((0, 3, 1, 2)) / 255.
+    s_stack = torch.tensor(s_stack, device=gpu).float()
+    s1_stack = np.array(s1_stack).transpose((0, 3, 1, 2)) / 255.
+    s1_stack = torch.tensor(s1_stack, device=gpu).float()
 
-    Q1 = targetDQN(s1_stack).detach().cpu().numpy().max(axis=1)
+    Q1 = targetDQN(s1_stack).cpu().detach().numpy().max(axis=1)
     y = r_stack + (1 - d_stack) * DISCOUNT * Q1
-    y = torch.tensor(y, device=device)
+    y = torch.tensor(y, device=gpu).float()
 
     Q = mainDQN(s_stack)
-    one_hot = torch.tensor(np.eye(N_ACTIONS, dtype='float32')[a_stack],
-                           device=device)
-    q_val = torch.sum(torch.mul(Q, one_hot), axis=1)
+    one_hot = torch.tensor(np.eye(OUTPUT)[a_stack], device=gpu).float()
+    q_val = torch.sum(torch.mul(Q, one_hot), 1)
 
     loss_fn = nn.MSELoss()
     loss = loss_fn(q_val, y)
@@ -65,75 +113,123 @@ def train(batch):
     optimizer.step()
 
 
-if __name__ == '__main__':
-    # Arguments parsing
-    parser = argparse.ArgumentParser(description='train')
-    parser.add_argument('--gpu', required=True, type=int)
-    parser.add_argument('--lr', default=0.00001, type=float)
-    args = parser.parse_args()
+def plot_data(epoch, epoch_score, average_reward, epoch_Q, average_Q):
+    plt.clf()
+    epoch_score.append(np.mean(average_reward))
+    epoch_Q.append(np.mean(average_Q))
 
-    env = gym.make('MsPacman-v0')
+    plt.subplot(211)
+    plt.axis([0, epoch, 0, np.max(epoch_Q) * 6 / 5])
+    plt.xlabel('Training Epochs')
+    plt.ylabel('Average Action Value(Q)')
+    plt.plot(epoch_Q)
 
-    now = datetime.datetime.now()
-    print(now)
+    plt.subplot(212)
+    plt.axis([0, epoch, 0, np.max(epoch_score) * 6 / 5])
+    plt.xlabel('Training Epochs')
+    plt.ylabel('Average Reward per Episode')
+    plt.plot(epoch_score, "r")
 
-    # Constants
-    HOUR_MIN = str(now.hour * 10000 + now.minute * 100 + now.second)
-    RESIZED_SIZE = 84  # Input size of DQN
-    N_ACTIONS = env.action_space.n
-    START_EPS = 1.0
-    FINAL_EPS = 0.05
-    EXPLORATION_STEPS = 300000
-    MEMORY_SIZE = 50000  # Steps
-    MAINDQN_UPDATE_CYCLE = 4
-    TARGETDQN_UPDATE_CYCLE = 20000  # Steps
-    PLOT_CYCLE = 20
-    TRAIN_START = 10000  # Steps
-    BATCH_SIZE = 32
-    DISCOUNT = 0.99
+    plt.savefig(f'graphs/{HHMMSS}.png')
 
-    device = torch.device(f'cuda:{args.gpu}')
 
-    mainDQN = DQN(3, N_ACTIONS).to(device)
-    targetDQN = copy.deepcopy(mainDQN)  # On device
+class DQN(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(DQN, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, 32, 3, 2)
+        self.conv2 = nn.Conv2d(32, 64, 3, 2)
+        self.conv3 = nn.Conv2d(64, 64, 3, 2)
+        self.fc1 = nn.Linear(64*9*9, 256)
+        self.fc2 = nn.Linear(256, out_channels)
 
-    optimizer = torch.optim.RMSprop(mainDQN.parameters(), lr=args.lr)
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.fc1(x.reshape(-1, 64*9*9)))
+        x = self.fc2(x)
+        return x
 
-    # Training-wide variables
-    eps = START_EPS
-    episode = 0
-    episode_rewards = []
-    avg_rewards = []
-    step = 0
-    max_reward = 0
+
+def get_action(q, e):
+    if e > np.random.rand(1):
+        action = np.random.randint(OUTPUT)
+    else:
+        action = np.argmax(q)
+    return action
+
+
+def main():
+    mainDQN = DQN(HISTORY_SIZE, OUTPUT)
+    targetDQN = copy.deepcopy(mainDQN)
+    mainDQN.to(gpu)
+    targetDQN.to(gpu)
+
+    optimizer = torch.optim.RMSprop(mainDQN.parameters(), lr=LEARNING_RATE,
+                                    eps=EPSILON, momentum=MOMENTUM)
+
+    e = START_EXPLORATION
+    episode, epoch, frame = 0, 0, 0
+
+    recent_rlist = deque(maxlen=100)
+    epoch_score, epoch_Q = deque(), deque()
+    average_Q, average_reward = deque(), deque()
+
+    epoch_on = False
+    no_life_game = False
     replay_memory = deque(maxlen=MEMORY_SIZE)
 
-    while True:  # Loop several episodes
-        # Episode-wide variables
+    max_score = 0
+
+    # Train agent during 200 epoch
+    while epoch < 1000:
         episode += 1
-        episode_reward = 0
-        history = np.zeros([2, RESIZED_SIZE, RESIZED_SIZE, 3],
-                           dtype=np.uint8)
 
-        state = env.reset()
-        state = preprocess(state)
-        history[0] = state
+        history = np.zeros([84, 84, 5], dtype=np.uint8)
+        rall, count = 0, 0  # rall: 한 episode의 reward 합
+        done = False
+        start_lives = 0
 
-        while True:  # Until an episode ends
-            # Step-wide variables
-            step += 1
+        s = env.reset()
+        prev_s = pre_proc(s)
+        history[:, :, :HISTORY_SIZE] = np.zeros((84, 84, HISTORY_SIZE))
 
-            # Select an action
-            X = history[0].transpose(2, 0, 1).astype('float32') / 255
-            X = torch.tensor(X, device=device)
-            X = X.unsqueeze(0)
-            Q = mainDQN(X).tolist()[0]
-            action = select_action(Q)
+        while not done:  # until episode ends
+            frame += 1  # frame counts in all episodes
+            count += 1  # frame counts in an episode
 
-            state, reward, done, _ = env.step(action)
-            episode_reward += reward
+            # e-greedy
+            if e > FINAL_EXPLORATION and frame > TRAIN_START:
+                e -= (START_EXPLORATION - FINAL_EXPLORATION) / EXPLORATION
 
-            # Reward propagation
+            # 히스토리의 0~3 부분으로 Q값 예측
+            X = history[:, :, :4].transpose(2, 0, 1).reshape(-1, 4, 84, 84)/255
+            X = torch.tensor(X, device=gpu).float()
+            Q = mainDQN(X)
+            Q = Q.reshape(-1).cpu().detach().numpy()
+            average_Q.append(np.max(Q))
+
+            # 1만 frame마다 Q 출력
+            if frame % FRAMES_PER_EPOCH == 0:
+                print('Q:', Q)
+
+            # 액션 선택
+            action = get_action(Q, e)
+
+            # s1 : next frame / r : reward
+            s1, r, done, info = env.step(action)
+
+            # 라이프가 있는 게임이면 no_life_game=True
+            no_life_game, start_lives = \
+                get_game_type(count, info, no_life_game, start_lives)
+
+            # 라이프가 줄어들거나 negative 리워드를 받았을 때 terminal 처리를 해줌
+            ter, start_lives = \
+                get_terminal(start_lives, info, r, no_life_game, done)
+
+            reward = -1 if ter else r
+
+            # 앞 frame들에 discounted reward 전파
             if reward != 0:
                 running_reward = reward
                 idx = replay_memory.__len__() - 1
@@ -142,54 +238,56 @@ if __name__ == '__main__':
                     replay_memory[idx][2] = running_reward
                     idx -= 1
 
-            # Save history in replay_memory
-            state = preprocess(state)
-            history[1] = state
-            replay_memory.append([history.copy(),
-                                 action, reward, done])
-            history[0] = history[1]
+            # 새로운 프레임을 히스토리 마지막에 넣어줌
+            pre_proc_s1 = pre_proc(s1)
+            history[:, :, 4] = pre_proc_s1 - prev_s
+            prev_s = pre_proc_s1
 
-            # Decrease the exploration rate
-            if eps > FINAL_EPS:
-                eps -= (START_EPS - FINAL_EPS) / EXPLORATION_STEPS
+            # 메모리 저장 효율을 높이기 위해 5개의 프레임을 가진 히스토리를 저장
+            # state와 next_state는 3개의 데이터가 겹침을 이용.
+            replay_memory.append([np.copy(history[:, :, :]),
+                                  action, reward, ter])
+            history[:, :, :4] = history[:, :, 1:]
 
-            # Update mainDQN
-            if step % MAINDQN_UPDATE_CYCLE == 0 and step >= TRAIN_START:
-                batch = random.sample(replay_memory, BATCH_SIZE)
-                train(batch)
+            rall += r
 
-            # Update targetDQN
-            if step % TARGETDQN_UPDATE_CYCLE == 0:
-                targetDQN = copy.deepcopy(mainDQN)
-                print(f'step: {step} | targetDQN updated')
+            if frame > TRAIN_START:
+                if frame % 4 == 0:
+                    minibatch = random.sample(replay_memory, MINIBATCH_SIZE)
+                    train_minibatch(mainDQN, targetDQN, minibatch, optimizer)
 
-            if done:
-                break
+                # 1만 프레임일때마다 target_net 업데이트
+                if frame % TARGET_UPDATE == 0:
+                    targetDQN = copy.deepcopy(mainDQN)
+                    targetDQN.to(gpu)
+                    print('targetDQN updated')
 
-        episode_rewards.append(episode_reward)
+            # 1 epoch마다 plot
+            if (frame - TRAIN_START) % FRAMES_PER_EPOCH == 0:
+                epoch_on = True
 
-        if episode % PLOT_CYCLE == 0:
-            avg_reward_per_episode = sum(episode_rewards)/len(episode_rewards)
-            avg_rewards.append(avg_reward_per_episode)
-            episode_rewards = []
+        recent_rlist.append(rall)  # 최근 100개 episode의 reward
+        average_reward.append(rall)  # 한 epoch의 모든 reward
 
-            # Plot the graph
-            plt.clf()
-            plt.xlabel('Episode')
-            plt.ylabel('Average reward per epiosde')
-            plt.plot(range(PLOT_CYCLE, episode+1, PLOT_CYCLE), avg_rewards)
-            plt.savefig(f'graphs/{HOUR_MIN}.png')
+        if episode % 100 == 0:
+            print("Episode:{0:6d} | Frames:{1:9d} | Steps:{2:5d} | "
+                  "Reward:{3:3.0f} | e-greedy:{4:.5f} | "
+                  "Avg_Max_Q:{5:2.5f} | Recent reward:{6:.5f}"
+                  .format(episode, frame, count, rall, e,
+                          np.mean(average_Q), np.mean(recent_rlist)))
 
-            # Save the best model
-            if avg_reward_per_episode > max_reward:
-                max_reward = avg_reward_per_episode
-                torch.save(mainDQN.state_dict(),
-                           f'models/{HOUR_MIN}.pt')
-                model_saved = True
-            else:
-                model_saved = False
+            # save the best model
+            score = np.mean(recent_rlist)
+            if score > max_score:
+                max_score = score
+                torch.save(mainDQN.state_dict(), f'models/{HHMMSS}.pt')
 
-            print(f'episode: {episode} |',
-                  f'avg reward: {avg_reward_per_episode} |',
-                  f'eps: {eps} |',
-                  f'model saved: {model_saved}')
+        if epoch_on:
+            epoch += 1
+            plot_data(epoch, epoch_score, average_reward, epoch_Q, average_Q)
+            epoch_on = False
+            average_reward = deque()
+            average_Q = deque()
+
+
+main()
