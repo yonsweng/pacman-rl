@@ -42,11 +42,9 @@ if __name__ == '__main__':
     mainDQN.eval()
 
     while True:
-        history = np.zeros([HISTORY_SIZE+1, RESIZED_SIZE, RESIZED_SIZE],
-                           dtype=np.uint8)
         state = env.reset()
         prev_state = pre_proc(state)
-        history[:, :, :HISTORY_SIZE] = np.zeros((84, 84, HISTORY_SIZE))
+        history = np.zeros((84, 84, HISTORY_SIZE+1), dtype=np.uint8)
 
         while True:
             env.render()
